@@ -1,25 +1,34 @@
 SpeedS@ver - Game Speed-runs as your Screensaver. 
 ---
 
-This is an imaginitively titled screensaver that will download and run videos of people completing speed runs of games. I for one don't really have time to play games anymore, but I can sure enjoy watching people who do, doing so.
+TAS as your macOS screensaver.
 
-This screensaver should work on Mac OS X 10.7 and above. However, it has only been tested with 10.8. 
+This is a fork of [orta/SpeedS-ver](https://github.com/orta/SpeedS-ver) - the original by **Orta Therox** (2013), All the credit and the idea belong to him. This is a swift rewrite for modern macOS.
 
-It will download a movie then continue playing every time the sceensaver loads until it finishes. There are options for which systems to download movies for, and which qualities to download from youtube. Or you can make it stream in the options.
+## What it does
 
-Setup
-----
+Streams TAS speed-runs from [archive.org](https://archive.org/): ~4,400 runs across 62 systems.
 
-Download this [zip file](https://raw.github.com/orta/GamesScreenSaver/master/web/SpeedS@ver.saver.zip) - unzip - double click the .screensaver. That will install it and open the System Preferences where you can choose the screensaver.
+## Install
 
-Screenshots
-----
+Grab the latest `SpeedS.saver.zip` from [Releases](../../releases), unzip, double-click `SpeedS.saver`. macOS opens **System Settings → Screen Saver** with SpeedS@ver selected.
 
-![Screenshot](https://raw.github.com/orta/GamesScreenSaver/master/web/screenshot.png)
-![Settings](https://raw.github.com/orta/GamesScreenSaver/master/web/settings.png)
-![Showing](https://raw.github.com/orta/GamesScreenSaver/master/web/in-action.png)
+## Build from source
 
-Interesting things
-----
+```sh
+xcodebuild -project SpeedS.xcodeproj -scheme SpeedS -configuration Release build
+open build/Release/
+```
 
-In order to build this I built a Screensaver Bootstrap app that emulates the Screensaver app whilst making it super easy to iterate fast on a screensaver. If you're building a screensaver this is really useful - especially as it means you can use the debug tools in Xcode.
+## Develop
+
+Open `SpeedS.xcodeproj`, run the **Bootstrap** scheme. Shortcuts: `⌘,` for settings and `⌘N` to next video.
+
+## Updating the metadata
+
+`tools/regen_metadata.py` re-fetches the TASVideos publication list from their public API and rewrites `metadata.json`.
+
+## Credits
+
+Original screensaver, idea, and metadata: **[Orta Therox](https://github.com/orta)**, 2013.
+Modernization: 2026. MIT licensed (see [LICENSE](./LICENSE)).

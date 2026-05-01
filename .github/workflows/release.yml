@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create releases
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            v="${GITHUB_REF#refs/tags/}"
+          else
+            v="$(date -u +%Y%m%d-%H%M%S)"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Detect signing capability
+        id: cfg
+        env:
+          CERT: ${{ secrets.SIGNING_CERT_BASE64 }}
+          NOTARY: ${{ secrets.NOTARY_API_KEY }}
+        run: |
+          [ -n "$CERT" ] && echo "sign=true" >> "$GITHUB_OUTPUT" || echo "sign=false" >> "$GITHUB_OUTPUT"
+          [ -n "$NOTARY" ] && echo "notarize=true" >> "$GITHUB_OUTPUT" || echo "notarize=false" >> "$GITHUB_OUTPUT"
+
+      - name: Import signing certificate
+        if: steps.cfg.outputs.sign == 'true'
+        env:
+          CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-keychain
+        run: |
+          echo "$CERT_BASE64" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm /tmp/cert.p12
+
+      - name: Build (Release)
+        env:
+          IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+        run: |
+          if [ -n "$IDENTITY" ]; then
+            xcodebuild -project SpeedS.xcodeproj -scheme SpeedS -configuration Release \
+              CODE_SIGN_IDENTITY="$IDENTITY" CODE_SIGN_STYLE=Manual \
+              SYMROOT="$PWD/build" build
+          else
+            xcodebuild -project SpeedS.xcodeproj -scheme SpeedS -configuration Release \
+              SYMROOT="$PWD/build" build
+          fi
+
+      - name: Notarize and staple
+        if: steps.cfg.outputs.notarize == 'true'
+        env:
+          KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
+          KEY: ${{ secrets.NOTARY_API_KEY }}
+        run: |
+          echo "$KEY" > /tmp/key.p8
+          ditto -c -k --keepParent build/Release/SpeedS.saver /tmp/notarize.zip
+          xcrun notarytool submit /tmp/notarize.zip \
+            --key /tmp/key.p8 --key-id "$KEY_ID" --issuer "$ISSUER" \
+            --wait --timeout 30m
+          xcrun stapler staple build/Release/SpeedS.saver
+          rm /tmp/key.p8 /tmp/notarize.zip
+
+      - name: Zip artifact
+        run: |
+          mkdir -p dist
+          cd build/Release
+          ditto -c -k --keepParent SpeedS.saver "$GITHUB_WORKSPACE/dist/SpeedS-${{ steps.ver.outputs.version }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpeedS-${{ steps.ver.outputs.version }}
+          path: dist/*.zip
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
