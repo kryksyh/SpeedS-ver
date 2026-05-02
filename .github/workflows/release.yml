@@ -27,8 +27,8 @@ jobs:
       - name: Detect signing capability
         id: cfg
         env:
-          CERT: ${{ secrets.SIGNING_CERT_BASE64 }}
-          NOTARY: ${{ secrets.NOTARY_API_KEY }}
+          CERT: ${{ secrets.MACOS_CERT_P12_B64 }}
+          NOTARY: ${{ secrets.MACOS_NOTARY_KEY_B64 }}
         run: |
           [ -n "$CERT" ] && echo "sign=true" >> "$GITHUB_OUTPUT" || echo "sign=false" >> "$GITHUB_OUTPUT"
           [ -n "$NOTARY" ] && echo "notarize=true" >> "$GITHUB_OUTPUT" || echo "notarize=false" >> "$GITHUB_OUTPUT"
@@ -36,9 +36,9 @@ jobs:
       - name: Import signing certificate
         if: steps.cfg.outputs.sign == 'true'
         env:
-          CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ github.run_id }}-keychain
+          CERT_BASE64: ${{ secrets.MACOS_CERT_P12_B64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
         run: |
           echo "$CERT_BASE64" | base64 --decode > /tmp/cert.p12
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
@@ -51,12 +51,24 @@ jobs:
 
       - name: Build (Release)
         env:
-          IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+          IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: |
+          set -euo pipefail
           if [ -n "$IDENTITY" ]; then
+            # Identity looks like: "Developer ID Application: Name (TEAMID)" — extract TEAMID
+            TEAM=$(echo "$IDENTITY" | sed -nE 's/.*\(([^)]+)\)$/\1/p')
+            echo "Signing with team: $TEAM"
             xcodebuild -project SpeedS.xcodeproj -scheme SpeedS -configuration Release \
               CODE_SIGN_IDENTITY="$IDENTITY" CODE_SIGN_STYLE=Manual \
+              DEVELOPMENT_TEAM="$TEAM" \
+              ENABLE_HARDENED_RUNTIME=YES \
+              OTHER_CODE_SIGN_FLAGS="--timestamp" \
               SYMROOT="$PWD/build" build
+            # Belt-and-suspenders: re-sign with hardened runtime + timestamp,
+            # in case xcodebuild's pass missed something.
+            codesign --force --deep --options runtime --timestamp \
+              --sign "$IDENTITY" build/Release/SpeedS.saver
+            codesign --verify --deep --strict --verbose=2 build/Release/SpeedS.saver
           else
             xcodebuild -project SpeedS.xcodeproj -scheme SpeedS -configuration Release \
               SYMROOT="$PWD/build" build
@@ -65,15 +77,30 @@ jobs:
       - name: Notarize and staple
         if: steps.cfg.outputs.notarize == 'true'
         env:
-          KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
-          ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
-          KEY: ${{ secrets.NOTARY_API_KEY }}
+          KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_B64 }}
         run: |
-          echo "$KEY" > /tmp/key.p8
+          set -euo pipefail
+          echo "$KEY_BASE64" | base64 --decode > /tmp/key.p8
           ditto -c -k --keepParent build/Release/SpeedS.saver /tmp/notarize.zip
-          xcrun notarytool submit /tmp/notarize.zip \
+
+          submit_out=$(xcrun notarytool submit /tmp/notarize.zip \
             --key /tmp/key.p8 --key-id "$KEY_ID" --issuer "$ISSUER" \
-            --wait --timeout 30m
+            --wait --timeout 30m --output-format json)
+          echo "$submit_out"
+          sid=$(echo "$submit_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          status=$(echo "$submit_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
+
+          if [ "$status" != "Accepted" ]; then
+            echo "::group::Apple notary log for $sid"
+            xcrun notarytool log "$sid" --key /tmp/key.p8 --key-id "$KEY_ID" --issuer "$ISSUER" || true
+            echo "::endgroup::"
+            rm -f /tmp/key.p8 /tmp/notarize.zip
+            echo "::error::Notarization status: $status"
+            exit 1
+          fi
+
           xcrun stapler staple build/Release/SpeedS.saver
           rm /tmp/key.p8 /tmp/notarize.zip
 
